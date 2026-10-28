@@ -1,0 +1,19 @@
+{
+  "name": "voting-platform",
+  "version": "1.0.0",
+  "description": "Invite-only voting platform: admins register voter emails, set positions and aspirants; voters sign in with their registered email and cast an anonymous ballot.",
+  "main": "server.js",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "multer": "^2.5.0"
+  }
+}

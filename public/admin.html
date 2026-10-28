@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin – VoteRight</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="/img/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true">
+    <span class="bubble b1"></span>
+    <span class="bubble b2"></span>
+    <span class="bubble b3"></span>
+  </div>
+
+  <header class="site-header">
+    <div class="container">
+      <a class="brand" href="/admin" id="brand"></a>
+      <nav class="nav" aria-label="Main">
+        <a href="/admin">Dashboard</a>
+        <span class="sep" aria-hidden="true">&gt;&gt;</span>
+        <a href="/" target="_blank" rel="noopener">Voter site</a>
+      </nav>
+      <div class="header-right">
+        <span id="status"></span>
+        <div class="user-menu" id="user-menu" hidden></div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="container" id="app">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </main>
+
+  <script type="module" src="/js/admin.js"></script>
+</body>
+</html>
