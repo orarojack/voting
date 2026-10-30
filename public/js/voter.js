@@ -31,6 +31,7 @@ async function boot() {
   document.title = `${state.election.title} – VoteRight`;
   $('#status').innerHTML = statusChip(state.election.status);
   $('#footer').innerHTML = renderFooter(state.election.title);
+  syncResultsLink();
 
   try {
     state.me = await api('/api/me');
@@ -39,6 +40,43 @@ async function boot() {
   }
   renderUserMenu();
   render();
+  startVoterLive();
+}
+
+function syncResultsLink() {
+  const show = Boolean(state.election?.resultsAvailable);
+  const link = $('.nav a[data-route="results"]');
+  const sep = $('.nav .sep');
+  if (link) link.hidden = !show;
+  if (sep) sep.hidden = !show;
+}
+
+let voterTimer = null;
+let resultsSig = '';
+
+function startVoterLive() {
+  clearInterval(voterTimer);
+  voterTimer = setInterval(() => {
+    tickVoter().catch(() => {});
+  }, 3000);
+}
+
+async function tickVoter() {
+  if (document.hidden || document.querySelector('.modal-root')) return;
+  const election = await api('/api/election');
+  const prev = state.election;
+  state.election = election;
+  document.title = `${election.title} – VoteRight`;
+  $('#status').innerHTML = statusChip(election.status);
+  syncResultsLink();
+  if (route() === 'results') {
+    await renderResults();
+    return;
+  }
+  if (!prev || !state.me) return;
+  const statusChanged = prev.status !== election.status;
+  const visibilityChanged = prev.resultsAvailable !== election.resultsAvailable;
+  if (statusChanged || (visibilityChanged && state.me.hasVoted)) render();
 }
 
 window.addEventListener('hashchange', render);
@@ -48,6 +86,8 @@ async function render() {
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === r));
   window.scrollTo({ top: 0 });
   if (r === 'results') return renderResults();
+  app.dataset.view = 'ballot';
+  resultsSig = '';
   if (!state.me) return renderLogin();
   return renderBallot();
 }
@@ -387,7 +427,11 @@ async function celebrate() {
       ${BALLOT_ILLUSTRATION}
       <h2>You voted!</h2>
       <p class="sub">Your ballot has been recorded anonymously. ${
-        state.election.resultsAvailable ? 'You can now follow the <strong>live results</strong>.' : 'Results will be shared once voting closes.'
+        state.election.resultsAvailable
+          ? 'You can now follow the <strong>live results</strong>.'
+          : state.election.resultsVisibility === 'hidden'
+            ? 'Results stay with the administrator.'
+            : 'Results will be shared once voting closes.'
       }</p>
       <div class="footer"><button type="button" class="btn" data-act="ok" autofocus>Okay</button></div>`,
     onMount(modal, close) {
@@ -402,15 +446,41 @@ async function celebrate() {
 // Results
 // ---------------------------------------------------------------------------
 
+function resultsLockedMessage() {
+  const hidden = state.election?.resultsVisibility === 'hidden';
+  return hidden ? 'Results are not public.' : 'Results will be published when voting closes.';
+}
+
 async function renderResults() {
-  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  if (!state.election?.resultsAvailable) {
+    resultsSig = '';
+    if (app.dataset.view === 'results-locked') return;
+    app.dataset.view = 'results-locked';
+    app.innerHTML = emptyState(
+      'Results aren’t available yet',
+      resultsLockedMessage(),
+      state.me && !state.me.hasVoted && state.election.status === 'open' ? '<a class="btn" href="#/">Go to your ballot</a>' : '',
+    );
+    return;
+  }
+
+  if (app.dataset.view !== 'results') {
+    app.dataset.view = 'results-loading';
+    app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  }
   let data;
   try {
     data = await api('/api/results');
   } catch (err) {
+    resultsSig = '';
+    app.dataset.view = 'results-locked';
     app.innerHTML = emptyState('Results aren’t available yet', err.message, state.me && !state.me.hasVoted && state.election.status === 'open' ? '<a class="btn" href="#/">Go to your ballot</a>' : '');
     return;
   }
+  const sig = JSON.stringify(data);
+  if (sig === resultsSig && app.dataset.view === 'results') return;
+  resultsSig = sig;
+  app.dataset.view = 'results';
   const positions = data.positions.filter((p) => p.aspirants.length);
   if (!positions.length) {
     app.innerHTML = emptyState('No results to show', 'There are no positions with aspirants yet.');
@@ -439,7 +509,7 @@ async function renderResults() {
         : ''
     }
     ${renderStats(data.turnout)}
-    <p style="text-align:center;color:var(--muted);font-size:12px;margin-top:28px">${isLive ? 'Live results — refresh to see the latest count.' : 'Final results.'}</p>`;
+    <p style="text-align:center;color:var(--muted);font-size:12px;margin-top:28px">${isLive ? 'Live results — this page updates automatically.' : 'Final results.'}</p>`;
 }
 
 boot();

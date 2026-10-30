@@ -14,7 +14,30 @@ const TABS = [
   { id: 'settings', label: 'Settings' },
 ];
 
-const state = { me: null, election: null, voterFilter: 'all', voterQuery: '' };
+const state = { me: null, election: null, voterFilter: 'all', voterQuery: '', voters: [], turnout: null, voterSig: '', overviewSig: '', resultsSig: '' };
+
+let viewGen = 0;
+let liveTimer = null;
+
+function startLiveUpdates() {
+  clearInterval(liveTimer);
+  liveTimer = setInterval(() => {
+    tickLive().catch(() => {});
+  }, 3000);
+}
+
+async function tickLive() {
+  if (!state.me || document.hidden || document.querySelector('.modal-root')) return;
+  const tab = currentTab();
+  try {
+    if (tab === 'overview') return renderOverview();
+    if (tab === 'results') return renderResults();
+    if (tab === 'voters') return refreshVotersLive();
+    await refreshElection();
+  } catch (err) {
+    if (err.status === 401) boot();
+  }
+}
 
 const currentTab = () => {
   const id = location.hash.replace(/^#\/?/, '');
@@ -43,6 +66,7 @@ async function refreshElection() {
 }
 
 function renderLogin() {
+  clearInterval(liveTimer);
   $('#user-menu').hidden = true;
   app.innerHTML = `
     <div class="auth-wrap">
@@ -108,6 +132,7 @@ function renderUserMenu() {
 // ---------------------------------------------------------------------------
 
 function renderShell() {
+  viewGen += 1;
   const tab = currentTab();
   app.innerHTML = `
     <div class="admin-tabs">
@@ -120,6 +145,7 @@ function renderShell() {
     <div id="panel"><div class="loading"><div class="spinner"></div></div></div>`;
   $$('[data-tab]').forEach((b) => (b.onclick = () => (location.hash = `#/${b.dataset.tab}`)));
   $('.segmented .active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  startLiveUpdates();
   PANELS[tab]().catch((err) => {
     if (err.status === 401) return boot();
     $('#panel').innerHTML = `<div class="card empty"><h3>Something went wrong</h3><p>${esc(err.message)}</p></div>`;
@@ -142,9 +168,22 @@ const STATUS_OPTIONS = [
 ];
 
 async function renderOverview() {
+  const token = viewGen;
   const [{ election, turnout }, { positions }] = await Promise.all([api('/api/admin/overview'), api('/api/admin/positions')]);
+  if (token !== viewGen || currentTab() !== 'overview') return;
   state.election = election;
   $('#status').innerHTML = statusChip(election.status);
+  const sig = JSON.stringify({
+    status: election.status,
+    title: election.title,
+    description: election.description,
+    visibility: election.resultsVisibility,
+    aspirants: election.aspirants,
+    turnout,
+    positions: positions.map((p) => [p.id, p.title, p.aspirants.length]),
+  });
+  if (sig === state.overviewSig && panel()?.querySelector('[data-status]')) return;
+  state.overviewSig = sig;
 
   const emptyPositions = positions.filter((p) => p.aspirants.length === 0);
   const checks = [
@@ -166,7 +205,7 @@ async function renderOverview() {
         </div>
         <button class="link-btn" data-go="settings">${icon('edit')} Edit election details</button>
       </div>
-      <div class="hero-art" style="align-items:center">${BALLOT_ILLUSTRATION.replace('class="illus"', 'class="illus" style="width:220px"')}</div>
+      <div class="hero-art" style="align-items:center"><img class="hero-logo" src="/img/medsam-logo.png" alt="Medical Students' Association of Maseno University"></div>
     </div>
 
     <div class="grid-2" style="margin-top:22px">
@@ -234,7 +273,9 @@ async function renderOverview() {
 // ---------------------------------------------------------------------------
 
 async function renderAspirants() {
+  const token = viewGen;
   const { positions } = await api('/api/admin/positions');
+  if (token !== viewGen || currentTab() !== 'aspirants') return;
 
   panel().innerHTML = `
     <div class="panel-head">
@@ -489,13 +530,95 @@ function aspirantModal(positions, aspirant) {
 // Voters
 // ---------------------------------------------------------------------------
 
+function drawVoterList() {
+  const voters = state.voters;
+  const q = state.voterQuery.toLowerCase();
+  const list = voters.filter(
+    (v) =>
+      (state.voterFilter === 'all' || (state.voterFilter === 'voted') === v.hasVoted) &&
+      (!q || v.email.toLowerCase().includes(q) || v.name.toLowerCase().includes(q)),
+  );
+  const host = $('#voter-list');
+  if (!host) return;
+  host.innerHTML = list.length
+    ? `<div style="overflow-x:auto"><table class="voter-table">
+        <thead><tr><th>Voter</th><th>Status</th><th class="hide-sm">Added</th><th></th></tr></thead>
+        <tbody>
+          ${list
+            .map(
+              (v) => `
+            <tr data-voter="${v.id}">
+              <td class="email"><div class="who">${avatar(v.name || v.email, null)}<div>${esc(v.email)}${v.name ? `<small>${esc(v.name)}</small>` : ''}</div></div></td>
+              <td>${v.hasVoted ? `<span class="chip" title="${esc(new Date(v.votedAt).toLocaleString())}">Voted</span>` : '<span class="chip grey">Not voted</span>'}</td>
+              <td class="hide-sm" style="color:var(--muted);font-size:12px">${esc(new Date(v.addedAt.replace(' ', 'T') + 'Z').toLocaleDateString())}</td>
+              <td class="num"><button class="icon-btn danger" data-act="remove" title="Remove voter">${icon('trash')}</button></td>
+            </tr>`,
+            )
+            .join('')}
+        </tbody></table></div>`
+    : `<div class="empty" style="padding:30px 0"><p style="margin:0">${voters.length ? 'No voters match this filter.' : 'No voters yet. Add the email addresses allowed to vote above.'}</p></div>`;
+
+  $$('[data-voter]', host).forEach((row) => {
+    const v = voters.find((x) => x.id === Number(row.dataset.voter));
+    $('[data-act=remove]', row).onclick = async () => {
+      const ok = await confirmDialog({
+        title: `Remove ${v.email}?`,
+        message: v.hasVoted
+          ? 'They have already voted; their anonymous ballot stays counted, but they will no longer be able to sign in.'
+          : 'They will no longer be able to sign in or vote.',
+        confirmText: 'Remove voter',
+        danger: true,
+      });
+      if (!ok) return;
+      await api(`/api/admin/voters/${v.id}`, { method: 'DELETE' });
+      toast('Voter removed.', 'success');
+      renderVoters();
+    };
+  });
+}
+
+function updateVoterChrome() {
+  const voters = state.voters;
+  const turnout = state.turnout;
+  const chip = $('#voter-count');
+  if (chip) chip.textContent = `${fmt(turnout.voted)} / ${fmt(turnout.registered)} voted`;
+  const labels = {
+    all: `All (${voters.length})`,
+    voted: `Voted (${turnout.voted})`,
+    pending: `Not voted (${voters.length - turnout.voted})`,
+  };
+  $$('[data-filter]').forEach((b) => {
+    if (labels[b.dataset.filter]) b.textContent = labels[b.dataset.filter];
+  });
+}
+
+async function refreshVotersLive() {
+  const token = viewGen;
+  if (!$('#voter-list') || currentTab() !== 'voters') return;
+  const data = await api('/api/admin/voters');
+  if (token !== viewGen || currentTab() !== 'voters' || !$('#voter-list')) return;
+  const sig = JSON.stringify(data.voters.map((v) => [v.id, v.hasVoted, v.votedAt, v.email, v.name]));
+  if (sig === state.voterSig) return;
+  state.voterSig = sig;
+  state.voters = data.voters;
+  state.turnout = data.turnout;
+  updateVoterChrome();
+  drawVoterList();
+}
+
 async function renderVoters() {
-  const { voters, turnout } = await api('/api/admin/voters');
+  const token = viewGen;
+  const data = await api('/api/admin/voters');
+  if (token !== viewGen || currentTab() !== 'voters') return;
+  state.voters = data.voters;
+  state.turnout = data.turnout;
+  state.voterSig = JSON.stringify(data.voters.map((v) => [v.id, v.hasVoted, v.votedAt, v.email, v.name]));
+  const { voters, turnout } = data;
 
   panel().innerHTML = `
     <div class="panel-head">
       <div><h2>Voter register</h2><p>Only these email addresses can sign in and vote. Each can vote once.</p></div>
-      <span class="chip outline">${fmt(turnout.voted)} / ${fmt(turnout.registered)} voted</span>
+      <span class="chip outline" id="voter-count">${fmt(turnout.voted)} / ${fmt(turnout.registered)} voted</span>
     </div>
 
     <div class="grid-2">
@@ -550,62 +673,19 @@ async function renderVoters() {
       <div id="voter-list"></div>
     </div>`;
 
-  const drawList = () => {
-    const q = state.voterQuery.toLowerCase();
-    const list = voters.filter(
-      (v) =>
-        (state.voterFilter === 'all' || (state.voterFilter === 'voted') === v.hasVoted) &&
-        (!q || v.email.toLowerCase().includes(q) || v.name.toLowerCase().includes(q)),
-    );
-    $('#voter-list').innerHTML = list.length
-      ? `<div style="overflow-x:auto"><table class="voter-table">
-          <thead><tr><th>Voter</th><th>Status</th><th class="hide-sm">Added</th><th></th></tr></thead>
-          <tbody>
-            ${list
-              .map(
-                (v) => `
-              <tr data-voter="${v.id}">
-                <td class="email"><div class="who">${avatar(v.name || v.email, null)}<div>${esc(v.email)}${v.name ? `<small>${esc(v.name)}</small>` : ''}</div></div></td>
-                <td>${v.hasVoted ? `<span class="chip" title="${esc(new Date(v.votedAt).toLocaleString())}">Voted</span>` : '<span class="chip grey">Not voted</span>'}</td>
-                <td class="hide-sm" style="color:var(--muted);font-size:12px">${esc(new Date(v.addedAt.replace(' ', 'T') + 'Z').toLocaleDateString())}</td>
-                <td class="num"><button class="icon-btn danger" data-act="remove" title="Remove voter">${icon('trash')}</button></td>
-              </tr>`,
-              )
-              .join('')}
-          </tbody></table></div>`
-      : `<div class="empty" style="padding:30px 0"><p style="margin:0">${voters.length ? 'No voters match this filter.' : 'No voters yet. Add the email addresses allowed to vote above.'}</p></div>`;
-
-    $$('[data-voter]').forEach((row) => {
-      const v = voters.find((x) => x.id === Number(row.dataset.voter));
-      $('[data-act=remove]', row).onclick = async () => {
-        const ok = await confirmDialog({
-          title: `Remove ${v.email}?`,
-          message: v.hasVoted
-            ? 'They have already voted; their anonymous ballot stays counted, but they will no longer be able to sign in.'
-            : 'They will no longer be able to sign in or vote.',
-          confirmText: 'Remove voter',
-          danger: true,
-        });
-        if (!ok) return;
-        await api(`/api/admin/voters/${v.id}`, { method: 'DELETE' });
-        toast('Voter removed.', 'success');
-        renderVoters();
-      };
-    });
-  };
-  drawList();
+  drawVoterList();
 
   $$('[data-filter]').forEach(
     (b) =>
       (b.onclick = () => {
         state.voterFilter = b.dataset.filter;
         $$('[data-filter]').forEach((x) => x.classList.toggle('active', x === b));
-        drawList();
+        drawVoterList();
       }),
   );
   $('#v-search').oninput = (e) => {
     state.voterQuery = e.target.value;
-    drawList();
+    drawVoterList();
   };
 
   const addVoters = async (body, btn) => {
@@ -647,18 +727,24 @@ async function renderVoters() {
 // ---------------------------------------------------------------------------
 
 async function renderResults() {
+  const token = viewGen;
   const data = await api('/api/admin/results');
+  if (token !== viewGen || currentTab() !== 'results') return;
+  await refreshElection();
+  if (token !== viewGen || currentTab() !== 'results') return;
+  const sig = JSON.stringify({ status: state.election.status, visibility: state.election.resultsVisibility, data });
+  if (sig === state.resultsSig && panel()?.querySelector('.result-block, .card.empty')) return;
+  state.resultsSig = sig;
   const positions = data.positions.filter((p) => p.aspirants.length);
+  const visibility = { live: 'Voters can see this count now.', after_close: 'Voters see this count only after you close voting.', hidden: 'Voters cannot see this count.' }[state.election.resultsVisibility];
   panel().innerHTML = `
     <div class="panel-head">
       <div><h2>Results</h2><p>${
         state.election.status === 'open' ? 'Live count — voting is still open.' : state.election.status === 'closed' ? 'Final count — voting is closed.' : 'Voting has not opened yet.'
-      } Only admins see this page unless results are made public in Settings.</p></div>
-      <button class="btn light" data-act="refresh">Refresh</button>
+      } ${visibility} This page updates automatically.</p></div>
     </div>
     ${positions.length ? positions.map(renderResultBlock).join('') : `<div class="card empty">${BALLOT_ILLUSTRATION}<h3>No results yet</h3><p>Add positions and aspirants first.</p></div>`}
     ${renderStats(data.turnout)}`;
-  $('[data-act=refresh]').onclick = () => renderResults().then(() => toast('Results refreshed.'));
 }
 
 // ---------------------------------------------------------------------------
@@ -666,7 +752,9 @@ async function renderResults() {
 // ---------------------------------------------------------------------------
 
 async function renderSettings() {
+  const token = viewGen;
   await refreshElection();
+  if (token !== viewGen || currentTab() !== 'settings') return;
   const e = state.election;
   panel().innerHTML = `
     <div class="panel-head"><div><h2>Settings</h2><p>Election details shown to voters and who can see results.</p></div></div>

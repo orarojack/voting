@@ -1,0 +1,19 @@
+name: voting
+
+services:
+  app:
+    build: .
+    image: voting-platform:latest
+    container_name: voting-platform
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:3020:3000"
+      - "100.120.212.31:3020:3000"
+    volumes:
+      - ./data:/data
+    networks: [default, proxy]
+
+networks:
+  proxy:
+    external: true

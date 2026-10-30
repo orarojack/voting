@@ -615,6 +615,12 @@ textarea.input {
   display: flex;
   align-items: flex-end;
 }
+.hero-logo {
+  width: 168px;
+  height: 168px;
+  object-fit: contain;
+  display: block;
+}
 
 /* ==========================================================================
    Podium
